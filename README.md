@@ -53,7 +53,7 @@ k6/                load scripts (cache, orders, scale)
 k8s/               Deployment, Service, HPA, PodDisruptionBudget per service
 scripts/           preflight checks (.sh for Mac, .ps1 for Windows), sample order body
 docs/              session runbook (commands, expected output, fallbacks)
-docs/slides/       the presentation: PDF, plus slides.html (self-contained, open in any browser)
+docs/slides/       the presentation: PowerPoint (.pptx, with speaker notes), PDF, and slides.html (open in any browser)
 ```
 
 ## Design notes

@@ -1,0 +1,128 @@
+# Whole demo stack. Works the same on Windows (Docker Desktop, WSL2 backend) and macOS (Docker Desktop / OrbStack).
+#   docker compose up -d --build
+name: perf-demo
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: catalog
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U demo -d catalog"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  jaeger:
+    image: jaegertracing/jaeger:2.22.0   # pinned: version rehearsed on macOS arm64
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4318:4318"     # OTLP/HTTP (only needed if you run the apps on your host instead of in Docker)
+
+  catalog:
+    build:
+      context: .
+      dockerfile: catalog-service/Dockerfile
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/catalog
+      REDIS_HOST: redis
+      OTLP_TRACES_URL: http://jaeger:4318/v1/traces
+      VIRTUAL_THREADS: ${VIRTUAL_THREADS:-true}
+    cpus: "1.0"          # one CPU per replica makes scale-out visible on a laptop
+    mem_limit: 768m
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8081'"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+
+  orders:
+    build:
+      context: .
+      dockerfile: order-service/Dockerfile
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/orders
+      CATALOG_URL: http://catalog:8081
+      OTLP_TRACES_URL: http://jaeger:4318/v1/traces
+      VIRTUAL_THREADS: ${VIRTUAL_THREADS:-true}
+    cpus: "1.0"
+    mem_limit: 768m
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8082'"]
+      interval: 5s
+      timeout: 3s
+      retries: 40
+      start_period: 20s
+
+  # Single front door (stands in for an API gateway / ingress). Re-resolves DNS every 5 s,
+  # so `docker compose up -d --scale catalog=3` is load-balanced automatically.
+  edge:
+    image: nginx:alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - catalog
+      - orders
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:13.2.4
+    ports:
+      - "3000:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/perf-demo.json
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+  # Load generator, started on demand:  docker compose run --rm k6 run /scripts/cache.js
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: ["load"]
+    environment:
+      BASE: http://edge:8080
+    volumes:
+      - ./k6:/scripts:ro
+    depends_on:
+      - edge
+
+volumes:
+  pgdata:

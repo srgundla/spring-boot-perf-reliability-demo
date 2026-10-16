@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # DNS service discovery: every replica of a service shows up automatically after `--scale`.
+  - job_name: catalog
+    metrics_path: /actuator/prometheus
+    dns_sd_configs:
+      - names: [catalog]
+        type: A
+        port: 8081
+        refresh_interval: 5s
+
+  - job_name: orders
+    metrics_path: /actuator/prometheus
+    dns_sd_configs:
+      - names: [orders]
+        type: A
+        port: 8082
+        refresh_interval: 5s
